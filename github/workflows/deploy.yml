@@ -1,0 +1,53 @@
+name: Deploy estadisticas-service
+
+on:
+  push:
+    branches:
+      - deploy
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push image
+        run: |
+          # Cambiado nombre de imagen a estadisticas-service
+          docker build -t estadisticas-service:${{ github.sha }} .
+          docker tag estadisticas-service:${{ github.sha }} ${{ steps.login-ecr.outputs.registry }}/estadisticas-service:${{ github.sha }}
+          docker tag estadisticas-service:${{ github.sha }} ${{ steps.login-ecr.outputs.registry }}/estadisticas-service:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/estadisticas-service:${{ github.sha }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/estadisticas-service:latest
+
+      - name: Actualizar Kubeconfig
+        run: |
+          aws eks update-kubeconfig --name casino-cluster --region ${{ secrets.AWS_REGION }}
+
+      - name: Crear o actualizar Secret en EKS
+        run: |
+          kubectl create secret generic casino-secrets \
+            --from-literal=DB_URL='${{ secrets.DB_URL }}' \
+            --from-literal=JWT_SECRET='${{ secrets.JWT_SECRET }}' \
+            --from-literal=DB_USER='${{ secrets.DB_USER }}' \
+            --from-literal=DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Desplegar en EKS
+        run: |
+          kubectl apply -f kubernetes/
+          # Cambiado nombre del deployment a estadisticas-service
+          kubectl rollout restart deployment/estadisticas-servicev
